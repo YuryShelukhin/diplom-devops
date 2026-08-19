@@ -1,0 +1,110 @@
+# Локальный .terraform каталог
+**/.terraform/*
+*.terraform.lock.hcl
+
+# Файлы состояния Terraform
+*.tfstate
+*.tfstate.*
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfstate.lock.info
+
+# Файлы переменных с секретами
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!example.tfvars
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration
+.terraformrc
+terraform.rc
+
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Key files
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.p8
+id_rsa
+id_rsa.pub  # Если публичный ключ тоже секретный
+*.private.key
+
+# Yandex Cloud specific
+credentials.json
+*.credentials.json
+service-account-key.json
+*.service-account-key.json
+
+
+secrets/
+*.secret
+.ssh/
+keys/
+
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+
+
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.iml
+
+
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+
+
+*.retry
+ansible/vault-password*
+.ansible/
+
+
+
+# Bootstrap outputs
+terraform/bootstrap/bootstrap-outputs.json
+terraform/bootstrap/terraform.tfvars
+
+# Ansible inventory
+ansible/inventory/hosts.yml
+ansible/inventory/hosts.ini
+
+# Kubernetes config files
+*.kubeconfig
+kubeconfig*
+~/.kube/config
+
+# GitLab CI local config
+.gitlab-ci-local.yml
