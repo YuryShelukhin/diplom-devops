@@ -51,6 +51,34 @@
 1. Terraform сконфигурирован и создание инфраструктуры посредством Terraform возможно без дополнительных ручных действий, стейт основной конфигурации сохраняется в бакете или Terraform Cloud
 2. Полученная конфигурация инфраструктуры является предварительной, поэтому в ходе дальнейшего выполнения задания возможны изменения.
 
+
+## Решение.
+
+1. Создадим сервисный аккаунт
+
+```
+# Сервисный аккаунт для Terraform
+resource "yandex_iam_service_account" "terraform_sa" {
+  name        = "diplom-sa"
+  description = "Service account for Terraform"
+}
+```
+
+<img src = "img/1-1.png" width = 60%> 
+
+2. Создадим S3-бакет.
+```
+Resource "yandex_storage_bucket" "terraform_state" {
+  bucket = "netology-diplom-devops-terraform-state"
+  access_key = yandex_iam_service_account_static_access_key.sa_static_key.access_key
+  secret_key = yandex_iam_service_account_static_access_key.sa_static_key.secret_key
+```
+
+<img src = "img/1-2.png" width = 60%>
+
+
+
+
 ---
 ### Создание Kubernetes кластера
 

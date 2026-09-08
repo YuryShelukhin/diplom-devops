@@ -6,3 +6,15 @@
 !*.tfvars.example
 terraform.tfvars
 .terraform.lock.hcl
+
+# Backend config
+backend.hcl
+*.backend.hcl
+# Временные файлы
+/tmp/
+*.tmp
+
+# Секреты
+secrets/
+*.key
+*.pem

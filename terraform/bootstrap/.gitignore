@@ -6,3 +6,11 @@
 !*.tfvars.example
 terraform.tfvars
 .terraform.lock.hcl
+# Временные файлы
+/tmp/
+*.tmp
+
+# Секреты
+secrets/
+*.key
+*.pem

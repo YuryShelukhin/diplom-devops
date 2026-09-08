@@ -108,3 +108,16 @@ kubeconfig*
 
 # GitLab CI local config
 .gitlab-ci-local.yml
+
+# Backend config
+backend.hcl
+*.backend.hcl
+
+# Временные файлы
+/tmp/
+*.tmp
+
+# Секреты
+secrets/
+*.key
+*.pem
