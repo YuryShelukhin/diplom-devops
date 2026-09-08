@@ -76,6 +76,11 @@ Resource "yandex_storage_bucket" "terraform_state" {
 
 <img src = "img/1-2.png" width = 60%>
 
+3. Создадим инфраструктуру. Для автоматизации будем использовать Makefile.
+
+
+<img src = "img/1-3-1.png" width = 60%> 
+<img src = "img/1-3-2.png" width = 60%> 
 
 
 
