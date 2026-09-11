@@ -39,7 +39,7 @@ destroy-all: ## Уничтожить ВСЁ включая bootstrap (остор
 	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
 		cd $(INFRA_DIR) && terraform destroy -auto-approve; \
 		cd $(BOOTSTRAP_DIR) && terraform destroy -auto-approve; \
-	fi
+			fi
 
 clean: ## Очистить временные файлы
 	rm -f /tmp/diploma_access_key /tmp/diploma_secret_key

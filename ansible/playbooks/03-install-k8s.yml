@@ -1,0 +1,70 @@
+---
+- name: Install kubeadm, kubelet, kubectl
+  hosts: masters:workers
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Kubernetes GPG key
+      ansible.builtin.get_url:
+        url: "{{ k8s_apt_key_url }}"
+        dest: /tmp/kubernetes-release.key
+        mode: '0644'
+
+    - name: Dearmor Kubernetes GPG key
+      ansible.builtin.shell: |
+        gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /"
+        state: present
+        filename: kubernetes
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install kubelet, kubeadm, kubectl
+      ansible.builtin.apt:
+        name:
+          - "kubelet={{ k8s_package_version }}"
+          - "kubeadm={{ k8s_package_version }}"
+          - "kubectl={{ k8s_package_version }}"
+        state: present
+        allow_downgrade: yes
+
+    - name: Hold kubelet, kubeadm, kubectl
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Enable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Get versions
+      ansible.builtin.shell: |
+        echo "kubeadm: $(kubeadm version -o short)"
+        echo "kubelet: $(kubelet --version)"
+        echo "kubectl: $(kubectl version --client -o yaml | grep gitVersion | awk '{print $2}')"
+      register: k8s_versions
+      changed_when: false
+
+    - name: Show versions
+      ansible.builtin.debug:
+        msg: "{{ k8s_versions.stdout_lines }}"

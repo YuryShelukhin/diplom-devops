@@ -25,19 +25,19 @@ resource "yandex_vpc_security_group" "masters_sg" {
   network_id  = yandex_vpc_network.k8s_network.id
 
   # SSH с bastion
-  ingress {
+    ingress {
     protocol       = "TCP"
-    description    = "SSH from bastion"
+    description    = "SSH from bastion and VPC"
     port           = 22
-    v4_cidr_blocks = ["10.0.10.0/24"]
-  }
+    v4_cidr_blocks = ["10.0.0.0/8", "10.0.10.0/24"]
+    }
 
   # Kubernetes API
   ingress {
     protocol       = "TCP"
     description    = "K8s API"
     port           = 6443
-    v4_cidr_blocks = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+    v4_cidr_blocks =  ["0.0.0.0/0", "10.0.0.0/8"]
   }
 
   # etcd
@@ -80,6 +80,13 @@ resource "yandex_vpc_security_group" "masters_sg" {
     description    = "Outgoing"
     v4_cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    protocol       = "ICMP"
+    description    = "ICMP from VPC"
+    v4_cidr_blocks = ["10.0.0.0/8"]
+  }
+
 }
 
 # Security group для workers
@@ -90,9 +97,9 @@ resource "yandex_vpc_security_group" "workers_sg" {
   # SSH с bastion
   ingress {
     protocol       = "TCP"
-    description    = "SSH from bastion"
+    description    = "SSH from bastion and VPC"
     port           = 22
-    v4_cidr_blocks = ["10.0.10.0/24"]
+    v4_cidr_blocks = ["10.0.0.0/8", "10.0.10.0/24"]
   }
 
   # Kubelet API
@@ -125,5 +132,11 @@ resource "yandex_vpc_security_group" "workers_sg" {
     protocol       = "ANY"
     description    = "Outgoing"
     v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    protocol       = "ICMP"
+    description    = "ICMP from VPC"
+    v4_cidr_blocks = ["10.0.0.0/8"]
   }
 }

@@ -48,3 +48,8 @@ resource "local_file" "ansible_inventory" {
 
 
 }
+
+output "k8s_api_lb_ip" {
+  description = "Internal LB IP for Kubernetes API (reserved)"
+  value       = "10.0.1.100"
+}

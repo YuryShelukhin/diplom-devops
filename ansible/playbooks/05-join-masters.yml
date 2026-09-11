@@ -1,0 +1,62 @@
+---
+- name: Join additional control plane nodes
+  hosts: masters
+  become: yes
+  serial: 1
+  vars:
+    first_master: "{{ groups['masters'][0] }}"
+
+  tasks:
+    - name: Skip first master
+      ansible.builtin.meta: end_host
+      when: inventory_hostname == first_master
+
+    - name: Fetch master join script from first master
+      ansible.builtin.slurp:
+        src: /tmp/master-join.sh
+      register: master_join_script
+      delegate_to: "{{ first_master }}"
+
+    - name: Ensure kubelet is running
+      ansible.builtin.systemd:
+        name: kubelet
+        state: started
+        enabled: yes
+
+    - name: Join control plane node
+      ansible.builtin.shell: |
+        {{ master_join_script.content | b64decode | trim }}
+      register: join_result
+      timeout: 600
+
+    - name: Show join result
+      ansible.builtin.debug:
+        var: join_result.stdout_lines
+
+    - name: Fix kubelet.conf to use LOCAL IP on this master
+      ansible.builtin.shell: |
+        LOCAL_IP=$(hostname -I | awk '{print $1}')
+        sed -i "s|10.0.1.20:6443|${LOCAL_IP}:6443|g" /etc/kubernetes/kubelet.conf
+        systemctl restart kubelet
+      register: fix_kubelet
+
+    - name: Wait for this node to appear in cluster
+      ansible.builtin.shell: |
+        KUBECONFIG=/etc/kubernetes/admin.conf kubectl get nodes | grep {{ inventory_hostname }}
+      delegate_to: "{{ first_master }}"
+      register: node_check
+      until: node_check.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Show cluster nodes
+      ansible.builtin.shell: |
+        KUBECONFIG=/etc/kubernetes/admin.conf kubectl get nodes -o wide
+      delegate_to: "{{ first_master }}"
+      register: nodes_output
+      changed_when: false
+
+    - name: Print nodes
+      ansible.builtin.debug:
+        var: nodes_output.stdout_lines

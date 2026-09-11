@@ -1,0 +1,148 @@
+---
+- name: Reset and prepare all nodes
+  hosts: masters:workers
+  become: yes
+
+  tasks:
+    - name: Reset kubeadm
+      ansible.builtin.command: kubeadm reset -f
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Remove old kubernetes directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/kubelet
+        - /etc/cni/net.d
+        - /var/lib/etcd
+        - /root/.kube
+
+    - name: Create kubelet config directory
+      ansible.builtin.file:
+        path: /var/lib/kubelet
+        state: directory
+        mode: "0755"
+
+    - name: Create kubelet config file
+      ansible.builtin.copy:
+        content: |
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+          containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+        dest: /var/lib/kubelet/config.yaml
+        mode: "0644"
+
+    - name: Ensure containerd is running
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        enabled: yes
+
+    - name: Stop kubelet until init/join
+      ansible.builtin.systemd:
+        name: kubelet
+        state: stopped
+        enabled: yes
+
+- name: Initialize first control plane node
+  hosts: "{{ groups['masters'][0] }}"
+  become: yes
+
+  tasks:
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        daemon_reload: yes
+
+    - name: Wait for containerd socket
+      ansible.builtin.wait_for:
+        path: /run/containerd/containerd.sock
+        timeout: 60
+
+    - name: Restart kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Initialize cluster with LB endpoint
+      ansible.builtin.command: >
+        kubeadm init
+        --control-plane-endpoint={{ ansible_default_ipv4.address }}:{{ k8s_api_port }}
+        --upload-certs
+        --pod-network-cidr={{ pod_cidr }}
+        --service-cidr={{ service_cidr }}
+        --apiserver-advertise-address={{ ansible_default_ipv4.address }}
+        --ignore-preflight-errors=Swap
+      register: init_output
+      timeout: 900
+
+    - name: Show init output
+      ansible.builtin.debug:
+        var: init_output.stdout_lines
+
+    - name: Get certificate key
+      ansible.builtin.shell: kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1
+      register: cert_key_output
+      changed_when: false
+
+    - name: Create worker join command
+      ansible.builtin.shell: kubeadm token create --print-join-command
+      register: worker_join_output
+      changed_when: false
+
+    - name: Create master join command
+      ansible.builtin.set_fact:
+        master_join_command: "{{ worker_join_output.stdout }} --control-plane --certificate-key {{ cert_key_output.stdout }}"
+
+    - name: Save join scripts
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "{{ item.dest }}"
+        mode: "0755"
+      loop:
+        - content: "{{ master_join_command }}"
+          dest: /tmp/master-join.sh
+        - content: "{{ worker_join_output.stdout }}"
+          dest: /tmp/worker-join.sh
+
+    - name: Setup kubectl for ubuntu user
+      ansible.builtin.shell: |
+        mkdir -p /home/ubuntu/.kube
+        cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+        chown -R ubuntu:ubuntu /home/ubuntu/.kube
+      changed_when: false
+
+    - name: Wait for API server via LB
+      ansible.builtin.uri:
+        url: "https://{{ k8s_vip }}:{{ k8s_api_port }}/healthz"
+        validate_certs: no
+        status_code: 200
+      register: api_health
+      until: api_health.status == 200
+      retries: 40
+      delay: 15
+      ignore_errors: yes
+
+    - name: Fallback - check API via local IP
+      ansible.builtin.uri:
+        url: "https://{{ ansible_default_ipv4.address }}:{{ k8s_api_port }}/healthz"
+        validate_certs: no
+        status_code: 200
+      register: api_health_local
+      until: api_health_local.status == 200
+      retries: 20
+      delay: 10
+      when: api_health is failed
+
+    - name: Show API status
+      ansible.builtin.debug:
+        msg:
+          - "API via LB: {{ api_health.status | default('FAILED') }}"
+          - "API via local: {{ api_health_local.status | default('not checked') }}"

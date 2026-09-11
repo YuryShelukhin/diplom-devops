@@ -1,10 +1,11 @@
-# Worker nodes
-resource "yandex_compute_instance" "worker" {
+# Master nodes
+resource "yandex_compute_instance" "master" {
   count       = 3
-  name        = "worker-${count.index + 1}"
-  hostname    = "worker-${count.index + 1}"
+  name        = "master-${count.index + 1}"
+  hostname    = "master-${count.index + 1}"
   platform_id = "standard-v3"
   zone        = count.index == 0 ? var.zone_a : count.index == 1 ? var.zone_b : var.zone_d
+  allow_stopping_for_update = true
 
   resources {
     cores         = 2
@@ -23,12 +24,8 @@ resource "yandex_compute_instance" "worker" {
   network_interface {
     subnet_id          = count.index == 0 ? yandex_vpc_subnet.subnet_a.id : count.index == 1 ? yandex_vpc_subnet.subnet_b.id : yandex_vpc_subnet.subnet_d.id
     nat                = false
-    ip_address         = "10.0.${count.index + 1}.30"
-    security_group_ids = [yandex_vpc_security_group.workers_sg.id]
-  }
-
-  scheduling_policy {
-    preemptible = true
+    ip_address         = "10.0.${count.index + 1}.20"
+    security_group_ids = [yandex_vpc_security_group.masters_sg.id]
   }
 
   metadata = {

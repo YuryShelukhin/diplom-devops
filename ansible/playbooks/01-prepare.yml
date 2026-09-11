@@ -1,0 +1,107 @@
+---
+- name: Prepare all nodes for Kubernetes
+  hosts: masters:workers
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Configure Yandex Cloud apt mirror
+      ansible.builtin.replace:
+        path: /etc/apt/sources.list.d/ubuntu.sources
+        regexp: 'http://(archive|security)\.ubuntu\.com'
+        replace: 'http://mirror.yandex.ru'
+      when: ansible_distribution == 'Ubuntu'
+    
+     
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+#    - name: Upgrade all packages
+#      ansible.builtin.apt:
+#        upgrade: dist
+#        autoremove: yes
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - jq
+          - socat
+          - conntrack
+          - ipset
+          - ipvsadm
+          - nfs-common
+          - net-tools
+          - vim
+          - htop
+          - bash-completion
+        state: present
+
+    - name: Disable swap (runtime)
+      ansible.builtin.command: swapoff -a
+      when: swap_disabled | bool
+      changed_when: false
+
+    - name: Disable swap in /etc/fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+.*)$'
+        replace: '# \1'
+      when: swap_disabled | bool
+
+    - name: Load kernel modules
+      ansible.builtin.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ kernel_modules }}"
+
+    - name: Ensure kernel modules persist
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          {% for module in kernel_modules %}
+          {{ module }}
+          {% endfor %}
+        mode: '0644'
+
+    - name: Set sysctl parameters
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: yes
+        state: present
+        reload: yes
+      loop: "{{ sysctl_params | dict2items }}"
+
+    - name: Set hostname
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Update /etc/hosts
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED - K8S CLUSTER"
+        block: |
+          {% for host in groups['masters'] %}
+          {{ hostvars[host].ansible_host }} {{ host }}
+          {% endfor %}
+          {% for host in groups['workers'] %}
+          {{ hostvars[host].ansible_host }} {{ host }}
+          {% endfor %}
+
+    - name: Check if reboot required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+      when: reboot_required.stat.exists

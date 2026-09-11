@@ -1,9 +1,7 @@
-# VPC сеть
 resource "yandex_vpc_network" "k8s_network" {
   name = "k8s-network"
 }
 
-# Публичная подсеть для bastion (без route table)
 resource "yandex_vpc_subnet" "public_subnet" {
   name           = "public-subnet"
   zone           = "ru-central1-a"
@@ -11,7 +9,6 @@ resource "yandex_vpc_subnet" "public_subnet" {
   v4_cidr_blocks = ["10.0.10.0/24"]
 }
 
-# Приватные подсети с NAT Gateway
 resource "yandex_vpc_subnet" "subnet_a" {
   name           = "subnet-a"
   zone           = "ru-central1-a"

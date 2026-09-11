@@ -1,0 +1,105 @@
+---
+- name: Install and configure containerd
+  hosts: masters:workers
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Install containerd dependencies
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Docker GPG key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+
+    - name: Add Docker repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    - name: Install containerd
+      ansible.builtin.apt:
+        name: containerd.io
+        state: present
+        update_cache: yes
+
+    - name: Create containerd config directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Backup existing containerd config
+      ansible.builtin.copy:
+        src: /etc/containerd/config.toml
+        dest: /etc/containerd/config.toml.bak
+        remote_src: yes
+        mode: '0644'
+      ignore_errors: yes
+
+    - name: Generate default containerd config
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      changed_when: true
+
+    - name: Enable SystemdCgroup in containerd
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Verify SystemdCgroup is enabled
+      ansible.builtin.shell: grep "SystemdCgroup = true" /etc/containerd/config.toml
+      register: systemd_cgroup_check
+      changed_when: false
+      failed_when: systemd_cgroup_check.rc != 0
+
+    - name: Verify sandbox image is set (containerd 1.7+)
+      ansible.builtin.shell: grep -E "sandbox(_image)? = " /etc/containerd/config.toml
+      register: sandbox_check
+      changed_when: false
+      failed_when: sandbox_check.rc != 0
+
+    - name: Show sandbox image
+      ansible.builtin.debug:
+        msg: "{{ sandbox_check.stdout_lines }}"
+
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Verify containerd is running
+      ansible.builtin.systemd:
+        name: containerd
+      register: containerd_status
+
+    - name: Show containerd status
+      ansible.builtin.debug:
+        msg: "containerd is {{ containerd_status.status.ActiveState }}"
+
+    - name: Check containerd socket
+      ansible.builtin.stat:
+        path: /run/containerd/containerd.sock
+      register: containerd_socket
+
+    - name: Fail if socket not found
+      ansible.builtin.fail:
+        msg: "containerd socket not found at /run/containerd/containerd.sock"
+      when: not containerd_socket.stat.exists
