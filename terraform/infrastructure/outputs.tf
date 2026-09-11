@@ -23,3 +23,28 @@ output "worker_ips" {
     "worker-${i + 1}" => instance.network_interface[0].ip_address
   }
 }
+
+# Генерация Ansible inventory из шаблона
+resource "local_file" "ansible_inventory" {
+  content = templatefile("${path.module}/templates/inventory.tpl", {
+    bastion_public_ip = yandex_compute_instance.bastion.network_interface[0].nat_ip_address
+    master_ips = {
+      for i, instance in yandex_compute_instance.master :
+      "master-${i + 1}" => instance.network_interface[0].ip_address
+    }
+    worker_ips = {
+      for i, instance in yandex_compute_instance.worker :
+      "worker-${i + 1}" => instance.network_interface[0].ip_address
+    }
+  })
+  filename        = "${path.module}/../../ansible/inventory/hosts.yml"
+  file_permission = "0644"
+
+  depends_on = [
+    yandex_compute_instance.bastion,
+    yandex_compute_instance.master,
+    yandex_compute_instance.worker,
+  ]
+
+
+}

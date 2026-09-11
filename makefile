@@ -29,11 +29,17 @@ plan: init ## Показать план
 apply: init ## Применить инфраструктуру
 	@cd $(INFRA_DIR) && terraform apply
 
-destroy: ## Уничтожить инфраструктуру
+destroy-infra: ## Уничтожить только инфраструктуру (не bootstrap)
 	@cd $(INFRA_DIR) && terraform destroy
 
-destroy-all: destroy ## Уничтожить всё включая bootstrap
-	@cd $(BOOTSTRAP_DIR) && terraform destroy
+destroy-all: ## Уничтожить ВСЁ включая bootstrap (осторожно!)
+	@echo "$(RED)ВНИМАНИЕ: Это удалит бакет и SA!$(NC)"
+	@read -p "Продолжить? [y/N] " -n 1 -r; \
+	echo; \
+	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+		cd $(INFRA_DIR) && terraform destroy -auto-approve; \
+		cd $(BOOTSTRAP_DIR) && terraform destroy -auto-approve; \
+	fi
 
 clean: ## Очистить временные файлы
 	rm -f /tmp/diploma_access_key /tmp/diploma_secret_key

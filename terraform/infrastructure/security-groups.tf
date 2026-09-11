@@ -29,7 +29,7 @@ resource "yandex_vpc_security_group" "masters_sg" {
     protocol       = "TCP"
     description    = "SSH from bastion"
     port           = 22
-    v4_cidr_blocks = ["10.0.1.0/24"]
+    v4_cidr_blocks = ["10.0.10.0/24"]
   }
 
   # Kubernetes API
@@ -92,7 +92,7 @@ resource "yandex_vpc_security_group" "workers_sg" {
     protocol       = "TCP"
     description    = "SSH from bastion"
     port           = 22
-    v4_cidr_blocks = ["10.0.1.0/24"]
+    v4_cidr_blocks = ["10.0.10.0/24"]
   }
 
   # Kubelet API

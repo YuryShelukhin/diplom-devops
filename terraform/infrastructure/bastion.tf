@@ -3,6 +3,7 @@ resource "yandex_compute_instance" "bastion" {
   hostname    = "bastion"
   platform_id = "standard-v3"
   zone        = var.zone_a
+  allow_stopping_for_update  = true
 
   resources {
     cores         = 2
@@ -19,10 +20,10 @@ resource "yandex_compute_instance" "bastion" {
   }
 
   network_interface {
-    subnet_id          = yandex_vpc_subnet.subnet_a.id
-    nat                = true
-    ip_address         = "10.0.1.10"
-    security_group_ids = [yandex_vpc_security_group.bastion_sg.id]
+  subnet_id  = yandex_vpc_subnet.public_subnet.id
+  nat        = true
+  ip_address = "10.0.10.10" 
+  security_group_ids = [yandex_vpc_security_group.bastion_sg.id]
   }
 
   metadata = {
