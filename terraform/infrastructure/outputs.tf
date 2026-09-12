@@ -10,21 +10,26 @@ output "bastion_internal_ip" {
 
 output "master_ips" {
   description = "Master nodes internal IPs"
-  value       = {
-    for i, instance in yandex_compute_instance.master : 
+  value = {
+    for i, instance in yandex_compute_instance.master :
     "master-${i + 1}" => instance.network_interface[0].ip_address
   }
 }
 
 output "worker_ips" {
   description = "Worker nodes internal IPs"
-  value       = {
-    for i, instance in yandex_compute_instance.worker : 
+  value = {
+    for i, instance in yandex_compute_instance.worker :
     "worker-${i + 1}" => instance.network_interface[0].ip_address
   }
 }
 
-# Генерация Ansible inventory из шаблона
+output "k8s_api_lb_ip" {
+  description = "Internal LB IP for the Kubernetes API"
+  value       = var.k8s_vip
+}
+
+# Generate the Ansible inventory from the template.
 resource "local_file" "ansible_inventory" {
   content = templatefile("${path.module}/templates/inventory.tpl", {
     bastion_public_ip = yandex_compute_instance.bastion.network_interface[0].nat_ip_address
@@ -36,6 +41,8 @@ resource "local_file" "ansible_inventory" {
       for i, instance in yandex_compute_instance.worker :
       "worker-${i + 1}" => instance.network_interface[0].ip_address
     }
+    ssh_key_path = pathexpand(var.ssh_public_key_path)
+    vm_user      = var.vm_user
   })
   filename        = "${path.module}/../../ansible/inventory/hosts.yml"
   file_permission = "0644"
@@ -45,11 +52,4 @@ resource "local_file" "ansible_inventory" {
     yandex_compute_instance.master,
     yandex_compute_instance.worker,
   ]
-
-
-}
-
-output "k8s_api_lb_ip" {
-  description = "Internal LB IP for Kubernetes API (reserved)"
-  value       = "10.0.1.100"
 }

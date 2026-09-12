@@ -1,0 +1,99 @@
+---
+- name: Join worker nodes
+  hosts: workers
+  become: true
+  gather_facts: true
+  serial: 1
+  vars:
+    first_master: "{{ groups['masters'][0] }}"
+
+  tasks:
+    - name: Add control-plane DNS entry pointing to LB
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '.*\s{{ k8s_api_dns }}$'
+        line: "{{ k8s_vip }} {{ k8s_api_dns }}"
+        state: present
+
+    - name: Check if node already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Skip join if node is already a cluster member
+      ansible.builtin.meta: end_host
+      when: kubelet_conf.stat.exists
+
+    - name: Ensure containerd is running
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        enabled: true
+
+    - name: Ensure kubelet is enabled
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+
+    - name: Fetch worker join script from first master
+      ansible.builtin.slurp:
+        src: /tmp/worker-join.sh
+      register: worker_join_script
+      delegate_to: "{{ first_master }}"
+
+    - name: Launch worker join in background
+      ansible.builtin.shell: |
+        nohup {{ worker_join_script.content | b64decode | trim }} > /tmp/worker-join.log 2>&1 &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: join_launcher
+
+    # Long SSH sessions via bastion tend to drop, so poll with short connections.
+    - name: Wait for join to complete
+      ansible.builtin.shell: "grep -c 'This node has joined the cluster' /tmp/worker-join.log"
+      register: join_done
+      until: join_done.stdout | int > 0
+      retries: 120
+      delay: 10
+      changed_when: false
+
+    - name: Fail fast if join errored
+      ansible.builtin.shell: "grep -q 'error execution phase' /tmp/worker-join.log"
+      register: join_err
+      failed_when: join_err.rc == 0
+      changed_when: false
+
+    - name: Read join log
+      ansible.builtin.shell: "tail -30 /tmp/worker-join.log"
+      register: join_log
+      changed_when: false
+
+    - name: Verify join succeeded
+      ansible.builtin.fail:
+        msg: "Join failed: {{ join_log.stdout_lines }}"
+      when: "'This node has joined the cluster' not in join_log.stdout"
+
+    - name: Show join result
+      ansible.builtin.debug:
+        var: join_log.stdout_lines
+
+    - name: Wait for this node to be Ready
+      ansible.builtin.shell: |
+        KUBECONFIG=/etc/kubernetes/admin.conf kubectl wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=300s
+      delegate_to: "{{ first_master }}"
+      register: node_ready
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Show cluster nodes
+      ansible.builtin.shell: |
+        KUBECONFIG=/etc/kubernetes/admin.conf kubectl get nodes -o wide
+      delegate_to: "{{ first_master }}"
+      register: nodes_output
+      changed_when: false
+
+    - name: Print nodes
+      ansible.builtin.debug:
+        var: nodes_output.stdout_lines

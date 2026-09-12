@@ -16,11 +16,14 @@ service_cidr: "10.96.0.0/12"
 k8s_vip: "10.0.1.100"
 k8s_api_port: 6443
 
-# CNI
-calico_version: "v3.28.2"
+# DNS-имя control plane endpoint.
+# На мастерах резолвится в собственный IP (ВМ из target group YC NLB
+# не может обращаться к себе через порт таргета), на воркерах - в k8s_vip.
+k8s_api_dns: "k8s-api.internal"
 
-# Пользователь
-ansible_user: ubuntu
+# Calico CNI
+calico_version: "v3.28.2"
+calico_ipv4pool_cidr: "10.244.0.0/16"
 
 # Kernel модули
 kernel_modules:

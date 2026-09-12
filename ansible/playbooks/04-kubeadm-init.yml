@@ -1,13 +1,14 @@
 ---
-- name: Reset and prepare all nodes
+- name: Reset all Kubernetes nodes
   hosts: masters:workers
-  become: yes
+  become: true
+  gather_facts: true
 
   tasks:
     - name: Reset kubeadm
       ansible.builtin.command: kubeadm reset -f
-      ignore_errors: yes
-      changed_when: false
+      ignore_errors: true
+      changed_when: true
 
     - name: Remove old kubernetes directories
       ansible.builtin.file:
@@ -19,20 +20,38 @@
         - /etc/cni/net.d
         - /var/lib/etcd
         - /root/.kube
+        - /home/ubuntu/.kube
 
-    - name: Create kubelet config directory
+    - name: Remove stale CNI interfaces
+      ansible.builtin.shell: |
+        for iface in cni0 flannel.1 tunl0 vxlan.calico kube-ipvs0; do
+          ip link delete "$iface" 2>/dev/null || true
+        done
+      changed_when: false
+
+    - name: Flush iptables and ipvs
+      ansible.builtin.shell: |
+        iptables -F 2>/dev/null || true
+        iptables -t nat -F 2>/dev/null || true
+        iptables -t mangle -F 2>/dev/null || true
+        iptables -X 2>/dev/null || true
+        ipvsadm --clear 2>/dev/null || true
+      changed_when: false
+
+    - name: Ensure kubelet config directory exists
       ansible.builtin.file:
         path: /var/lib/kubelet
         state: directory
         mode: "0755"
 
-    - name: Create kubelet config file
+    # Kubeadm itself creates /var/lib/kubelet/config.yaml during init/join.
+    # We only set the runtime endpoint so kubelet starts cleanly.
+    - name: Create minimal kubelet drop-in config
       ansible.builtin.copy:
         content: |
           apiVersion: kubelet.config.k8s.io/v1beta1
           kind: KubeletConfiguration
-          cgroupDriver: systemd
-          containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+          containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
         dest: /var/lib/kubelet/config.yaml
         mode: "0644"
 
@@ -40,45 +59,101 @@
       ansible.builtin.systemd:
         name: containerd
         state: started
-        enabled: yes
+        enabled: true
 
     - name: Stop kubelet until init/join
       ansible.builtin.systemd:
         name: kubelet
         state: stopped
-        enabled: yes
+        enabled: true
 
 - name: Initialize first control plane node
   hosts: "{{ groups['masters'][0] }}"
-  become: yes
+  become: true
+  gather_facts: true
+
+  vars:
+    master_ips: "{{ groups['masters'] | map('extract', hostvars, 'ansible_host') | list }}"
 
   tasks:
     - name: Restart containerd
       ansible.builtin.systemd:
         name: containerd
         state: restarted
-        daemon_reload: yes
+        daemon_reload: true
 
     - name: Wait for containerd socket
       ansible.builtin.wait_for:
         path: /run/containerd/containerd.sock
         timeout: 60
 
-    - name: Restart kubelet
-      ansible.builtin.systemd:
-        name: kubelet
-        state: restarted
-        enabled: yes
-        daemon_reload: yes
+    - name: Add local control-plane DNS entry
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: "^.*\\s{{ k8s_api_dns }}$"
+        line: "{{ ansible_default_ipv4.address }} {{ k8s_api_dns }}"
+        state: present
 
-    - name: Initialize cluster with LB endpoint
+    - name: Generate certificate key
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubeadm certs certificate-key
+      args:
+        executable: /bin/bash
+      register: cert_key_output
+      changed_when: false
+
+    - name: Validate certificate key
+      ansible.builtin.set_fact:
+        cert_key: "{{ cert_key_output.stdout | regex_search('^[a-f0-9]{64}$') }}"
+
+    - name: Fail if certificate key is invalid
+      ansible.builtin.fail:
+        msg: "Could not generate a valid 64-char hex certificate key"
+      when: cert_key | length != 64
+
+    # endpoint-reconciler-type=none is required because master VMs are internal
+    # NLB targets: the default reconciler writes direct master IPs into the
+    # kubernetes EndpointSlice, but those ports are blocked by YC. We point the
+    # endpoints to the LB VIP instead (see the next play).
+    - name: Render kubeadm init configuration
+      ansible.builtin.copy:
+        dest: /tmp/kubeadm-config.yaml
+        mode: "0644"
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: InitConfiguration
+          localAPIEndpoint:
+            advertiseAddress: {{ ansible_default_ipv4.address }}
+            bindPort: {{ k8s_api_port }}
+          nodeRegistration:
+            criSocket: unix:///run/containerd/containerd.sock
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: ClusterConfiguration
+          controlPlaneEndpoint: {{ k8s_api_dns }}:{{ k8s_api_port }}
+          networking:
+            podSubnet: {{ pod_cidr }}
+            serviceSubnet: {{ service_cidr }}
+          apiServer:
+            certSANs:
+              - {{ k8s_vip }}
+              - {{ k8s_api_dns }}
+          {% for ip in master_ips %}
+              - {{ ip }}
+          {% endfor %}
+            extraArgs:
+              endpoint-reconciler-type: none
+          ---
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+
+    - name: Initialize cluster
       ansible.builtin.command: >
-        kubeadm init
-        --control-plane-endpoint={{ ansible_default_ipv4.address }}:{{ k8s_api_port }}
+        kubeadm init --config /tmp/kubeadm-config.yaml
         --upload-certs
-        --pod-network-cidr={{ pod_cidr }}
-        --service-cidr={{ service_cidr }}
-        --apiserver-advertise-address={{ ansible_default_ipv4.address }}
+        --certificate-key={{ cert_key }}
         --ignore-preflight-errors=Swap
       register: init_output
       timeout: 900
@@ -87,31 +162,6 @@
       ansible.builtin.debug:
         var: init_output.stdout_lines
 
-    - name: Get certificate key
-      ansible.builtin.shell: kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1
-      register: cert_key_output
-      changed_when: false
-
-    - name: Create worker join command
-      ansible.builtin.shell: kubeadm token create --print-join-command
-      register: worker_join_output
-      changed_when: false
-
-    - name: Create master join command
-      ansible.builtin.set_fact:
-        master_join_command: "{{ worker_join_output.stdout }} --control-plane --certificate-key {{ cert_key_output.stdout }}"
-
-    - name: Save join scripts
-      ansible.builtin.copy:
-        content: "{{ item.content }}"
-        dest: "{{ item.dest }}"
-        mode: "0755"
-      loop:
-        - content: "{{ master_join_command }}"
-          dest: /tmp/master-join.sh
-        - content: "{{ worker_join_output.stdout }}"
-          dest: /tmp/worker-join.sh
-
     - name: Setup kubectl for ubuntu user
       ansible.builtin.shell: |
         mkdir -p /home/ubuntu/.kube
@@ -119,30 +169,162 @@
         chown -R ubuntu:ubuntu /home/ubuntu/.kube
       changed_when: false
 
-    - name: Wait for API server via LB
-      ansible.builtin.uri:
-        url: "https://{{ k8s_vip }}:{{ k8s_api_port }}/healthz"
-        validate_certs: no
-        status_code: 200
-      register: api_health
-      until: api_health.status == 200
-      retries: 40
-      delay: 15
-      ignore_errors: yes
-
-    - name: Fallback - check API via local IP
+    - name: Wait for local API server
       ansible.builtin.uri:
         url: "https://{{ ansible_default_ipv4.address }}:{{ k8s_api_port }}/healthz"
         validate_certs: no
         status_code: 200
       register: api_health_local
       until: api_health_local.status == 200
-      retries: 20
-      delay: 10
-      when: api_health is failed
+      retries: 30
+      delay: 5
 
-    - name: Show API status
+    - name: Create kubeadm join token
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubeadm token create --print-join-command
+      args:
+        executable: /bin/bash
+      register: worker_join_output
+      changed_when: false
+
+    - name: Save join scripts
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "{{ item.dest }}"
+        mode: "0755"
+      loop:
+        - content: "{{ worker_join_output.stdout }} --control-plane --certificate-key {{ cert_key }}"
+          dest: /tmp/master-join.sh
+        - content: "{{ worker_join_output.stdout }}"
+          dest: /tmp/worker-join.sh
+
+    - name: Show join commands
       ansible.builtin.debug:
         msg:
-          - "API via LB: {{ api_health.status | default('FAILED') }}"
-          - "API via local: {{ api_health_local.status | default('not checked') }}"
+          - "Master join: {{ worker_join_output.stdout }} --control-plane --certificate-key {{ cert_key }}"
+          - "Worker join: {{ worker_join_output.stdout }}"
+
+- name: Route in-cluster API traffic through the load balancer
+  hosts: "{{ groups['masters'][0] }}"
+  become: true
+  gather_facts: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+  tasks:
+    # The kubernetes service is backed by the LB VIP. kube-proxy on every node
+    # then DNATs 10.96.0.1:443 to the VIP, which is reachable from workers.
+    - name: Point kubernetes Endpoints to the LB VIP
+      ansible.builtin.command: >
+        kubectl patch endpoints kubernetes -n default --type=merge
+        -p {"subsets":[{"addresses":[{"ip":"{{ k8s_vip }}"}],"ports":[{"name":"https","port":{{ k8s_api_port }},"protocol":"TCP"}]}]}
+      register: ep_patch
+      changed_when: "'patched' in ep_patch.stdout"
+
+    # kube-proxy in 1.30 consumes EndpointSlices, not Endpoints.
+    - name: Point kubernetes EndpointSlice to the LB VIP
+      ansible.builtin.command: >
+        kubectl patch endpointslice kubernetes -n default --type=merge
+        -p {"endpoints":[{"addresses":["{{ k8s_vip }}"]}],"ports":[{"name":"https","port":{{ k8s_api_port }},"protocol":"TCP"}]}
+      register: es_patch
+      changed_when: "'patched' in es_patch.stdout"
+
+    # A master VM cannot reach its own target port via the internal NLB
+    # (hairpin is blocked by YC), so redirect VIP traffic to the local apiserver.
+    # This is done on additional masters in playbook 05, after they join.
+    - name: Install persistent VIP-to-local DNAT unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/k8s-api-local-dnat.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Redirect Kubernetes API VIP to the local apiserver
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/sh -c 'iptables -t nat -C OUTPUT -d {{ k8s_vip }}/32 -p tcp --dport {{ k8s_api_port }} -j DNAT --to-destination $(hostname -I | awk "{print $1}"):{{ k8s_api_port }} 2>/dev/null || iptables -t nat -A OUTPUT -d {{ k8s_vip }}/32 -p tcp --dport {{ k8s_api_port }} -j DNAT --to-destination $(hostname -I | awk "{print $1}"):{{ k8s_api_port }}'
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start DNAT unit
+      ansible.builtin.systemd:
+        name: k8s-api-local-dnat.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+- name: Install Calico CNI
+  hosts: "{{ groups['masters'][0] }}"
+  become: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+  tasks:
+    - name: Download Calico manifests
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
+        dest: /tmp/tigera-operator.yaml
+        mode: "0644"
+
+    - name: Download Calico custom resources
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/custom-resources.yaml"
+        dest: /tmp/custom-resources.yaml
+        mode: "0644"
+
+    - name: Patch Calico IP pool
+      ansible.builtin.replace:
+        path: /tmp/custom-resources.yaml
+        regexp: 'cidr: 192\.168\.0\.0/16'
+        replace: 'cidr: {{ calico_ipv4pool_cidr }}'
+
+    # YC security groups block IPIP (IP protocol 4), so VXLAN is used instead.
+    - name: Patch Calico encapsulation to VXLAN
+      ansible.builtin.replace:
+        path: /tmp/custom-resources.yaml
+        regexp: 'encapsulation: (IPIP|VXLAN)'
+        replace: 'encapsulation: VXLAN'
+
+    - name: Install Tigera operator
+      ansible.builtin.command: >
+        kubectl apply --server-side --force-conflicts -f /tmp/tigera-operator.yaml
+      register: calico_operator
+      changed_when: "'created' in calico_operator.stdout or 'configured' in calico_operator.stdout"
+
+    - name: Install Calico custom resources
+      ansible.builtin.command: >
+        kubectl apply --server-side --force-conflicts -f /tmp/custom-resources.yaml
+      register: calico_cr
+      changed_when: "'created' in calico_cr.stdout or 'configured' in calico_cr.stdout"
+
+    - name: Wait for Calico pods
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=Ready pod -n tigera-operator -l name=tigera-operator --timeout=120s || true
+        kubectl wait --for=condition=Ready pod -n calico-system --all --timeout=300s || true
+      register: calico_ready
+      changed_when: false
+      retries: 3
+      delay: 10
+
+    - name: Wait for CoreDNS
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=Ready pod -n kube-system -l k8s-app=kube-dns --timeout=300s
+      register: coredns_ready
+      changed_when: false
+      retries: 20
+      delay: 10
+
+    - name: Show cluster nodes
+      ansible.builtin.shell: |
+        kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+
+    - name: Print nodes
+      ansible.builtin.debug:
+        var: nodes_output.stdout_lines

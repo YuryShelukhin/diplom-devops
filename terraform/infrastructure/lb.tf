@@ -1,4 +1,4 @@
-# Target group для master nodes
+# Target group for master nodes
 resource "yandex_lb_target_group" "k8s_masters" {
   name = "k8s-ha-masters"
 
@@ -11,17 +11,17 @@ resource "yandex_lb_target_group" "k8s_masters" {
   }
 }
 
-# Internal Network Load Balancer для API server
+# Internal Network Load Balancer for the Kubernetes API
 resource "yandex_lb_network_load_balancer" "k8s_api" {
   name = "k8s-ha-api"
   type = "internal"
 
   listener {
     name = "k8s-api"
-    port = 6443
+    port = var.k8s_api_port
     internal_address_spec {
       subnet_id = yandex_vpc_subnet.subnet_a.id
-      address   = "10.0.1.100"
+      address   = var.k8s_vip
     }
   }
 
@@ -29,9 +29,9 @@ resource "yandex_lb_network_load_balancer" "k8s_api" {
     target_group_id = yandex_lb_target_group.k8s_masters.id
 
     healthcheck {
-      name = "tcp6443"
+      name = "tcp${var.k8s_api_port}"
       tcp_options {
-        port = 6443
+        port = var.k8s_api_port
       }
     }
   }

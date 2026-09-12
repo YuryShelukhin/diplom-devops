@@ -1,7 +1,8 @@
 ---
 - name: Join additional control plane nodes
   hosts: masters
-  become: yes
+  become: true
+  gather_facts: true
   serial: 1
   vars:
     first_master: "{{ groups['masters'][0] }}"
@@ -11,41 +12,131 @@
       ansible.builtin.meta: end_host
       when: inventory_hostname == first_master
 
+    - name: Check if node already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    # Joined masters use their local apiserver (direct 6443 access to other
+    # masters is blocked by YC because masters are internal NLB targets).
+    # Joining masters must go through the LB VIP.
+    - name: Set control-plane DNS entry
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '.*\s{{ k8s_api_dns }}$'
+        line: "{{ (ansible_default_ipv4.address if kubelet_conf.stat.exists else k8s_vip) }} {{ k8s_api_dns }}"
+        state: present
+
+    - name: Ensure containerd is running
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        enabled: true
+
+    - name: Ensure kubelet is enabled
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+
     - name: Fetch master join script from first master
       ansible.builtin.slurp:
         src: /tmp/master-join.sh
       register: master_join_script
       delegate_to: "{{ first_master }}"
+      when: not kubelet_conf.stat.exists
 
-    - name: Ensure kubelet is running
-      ansible.builtin.systemd:
-        name: kubelet
-        state: started
-        enabled: yes
-
-    - name: Join control plane node
+    # kubeadm-certs secret expires 2 hours after init, so re-upload certs
+    # with the same certificate key before joining.
+    - name: Refresh uploaded certificates on first master
       ansible.builtin.shell: |
-        {{ master_join_script.content | b64decode | trim }}
-      register: join_result
-      timeout: 600
+        set -o pipefail
+        CERT_KEY=$(grep -oE '[a-f0-9]{64}' /tmp/master-join.sh | tail -1)
+        test -n "$CERT_KEY" || { echo "certificate key not found in /tmp/master-join.sh"; exit 1; }
+        kubeadm init phase upload-certs --upload-certs --certificate-key "$CERT_KEY"
+      args:
+        executable: /bin/bash
+      register: certs_refresh
+      delegate_to: "{{ first_master }}"
+      changed_when: "'uploaded' in certs_refresh.stdout"
+      when: not kubelet_conf.stat.exists
+
+    - name: Launch control plane join in background
+      ansible.builtin.shell: |
+        nohup {{ master_join_script.content | b64decode | trim }} > /tmp/master-join.log 2>&1 &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: join_launcher
+      when: not kubelet_conf.stat.exists
+
+    # Long SSH sessions via bastion tend to drop, so poll with short connections.
+    - name: Wait for join to complete
+      ansible.builtin.shell: "grep -c 'This node has joined the cluster' /tmp/master-join.log"
+      register: join_done
+      until: join_done.stdout | int > 0
+      retries: 120
+      delay: 10
+      changed_when: false
+      when: not kubelet_conf.stat.exists
+
+    - name: Fail fast if join errored
+      ansible.builtin.shell: "grep -q 'error execution phase' /tmp/master-join.log"
+      register: join_err
+      failed_when: join_err.rc == 0
+      changed_when: false
+      when: not kubelet_conf.stat.exists
+
+    - name: Read join log
+      ansible.builtin.shell: "tail -30 /tmp/master-join.log"
+      register: join_log
+      changed_when: false
+      when: not kubelet_conf.stat.exists
 
     - name: Show join result
       ansible.builtin.debug:
-        var: join_result.stdout_lines
+        var: join_log.stdout_lines
+      when: not kubelet_conf.stat.exists
 
-    - name: Fix kubelet.conf to use LOCAL IP on this master
+    - name: Setup kubectl for ubuntu user
       ansible.builtin.shell: |
-        LOCAL_IP=$(hostname -I | awk '{print $1}')
-        sed -i "s|10.0.1.20:6443|${LOCAL_IP}:6443|g" /etc/kubernetes/kubelet.conf
-        systemctl restart kubelet
-      register: fix_kubelet
+        mkdir -p /home/ubuntu/.kube
+        cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+        chown -R ubuntu:ubuntu /home/ubuntu/.kube
+      changed_when: false
 
-    - name: Wait for this node to appear in cluster
+    # A master VM cannot reach its own target port via the internal NLB
+    # (hairpin is blocked by YC), so redirect VIP traffic to the local apiserver.
+    # Installed on the first master in playbook 04.
+    - name: Install persistent VIP-to-local DNAT unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/k8s-api-local-dnat.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Redirect Kubernetes API VIP to the local apiserver
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/sh -c 'iptables -t nat -C OUTPUT -d {{ k8s_vip }}/32 -p tcp --dport {{ k8s_api_port }} -j DNAT --to-destination $(hostname -I | awk "{print $1}"):{{ k8s_api_port }} 2>/dev/null || iptables -t nat -A OUTPUT -d {{ k8s_vip }}/32 -p tcp --dport {{ k8s_api_port }} -j DNAT --to-destination $(hostname -I | awk "{print $1}"):{{ k8s_api_port }}'
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start DNAT unit
+      ansible.builtin.systemd:
+        name: k8s-api-local-dnat.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for this node to be Ready
       ansible.builtin.shell: |
-        KUBECONFIG=/etc/kubernetes/admin.conf kubectl get nodes | grep {{ inventory_hostname }}
+        KUBECONFIG=/etc/kubernetes/admin.conf kubectl wait --for=condition=Ready node/{{ inventory_hostname }} --timeout=300s
       delegate_to: "{{ first_master }}"
-      register: node_check
-      until: node_check.rc == 0
+      register: node_ready
       retries: 30
       delay: 10
       changed_when: false

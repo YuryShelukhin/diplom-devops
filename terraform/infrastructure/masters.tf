@@ -1,35 +1,35 @@
 # Master nodes
 resource "yandex_compute_instance" "master" {
-  count       = 3
+  count       = var.masters_count
   name        = "master-${count.index + 1}"
   hostname    = "master-${count.index + 1}"
-  platform_id = "standard-v3"
-  zone        = count.index == 0 ? var.zone_a : count.index == 1 ? var.zone_b : var.zone_d
+  platform_id = var.platform_id
+  zone        = [var.zone_a, var.zone_b, var.zone_d][count.index % 3]
   allow_stopping_for_update = true
 
   resources {
-    cores         = 2
-    memory        = 4
-    core_fraction = 100
+    cores         = var.master_resources.cores
+    memory        = var.master_resources.memory
+    core_fraction = var.master_resources.core_fraction
   }
 
   boot_disk {
     initialize_params {
-      image_id = "fd83ica41cade1mj35sr"  # Ubuntu 24.04 LTS
-      size     = 50
-      type     = "network-hdd"
+      image_id = var.image_id
+      size     = var.master_resources.disk_size
+      type     = var.master_resources.disk_type
     }
   }
 
   network_interface {
-    subnet_id          = count.index == 0 ? yandex_vpc_subnet.subnet_a.id : count.index == 1 ? yandex_vpc_subnet.subnet_b.id : yandex_vpc_subnet.subnet_d.id
+    subnet_id          = [yandex_vpc_subnet.subnet_a.id, yandex_vpc_subnet.subnet_b.id, yandex_vpc_subnet.subnet_d.id][count.index % 3]
     nat                = false
-    ip_address         = "10.0.${count.index + 1}.20"
+    ip_address         = "10.0.${count.index + 1}.${var.master_node_ip_suffix}"
     security_group_ids = [yandex_vpc_security_group.masters_sg.id]
   }
 
   metadata = {
-    ssh-keys = "ubuntu:${file(var.ssh_public_key_path)}"
+    ssh-keys = "${var.vm_user}:${file(var.ssh_public_key_path)}"
   }
 
   depends_on = [yandex_compute_instance.bastion]

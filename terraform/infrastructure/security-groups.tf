@@ -65,6 +65,22 @@ resource "yandex_vpc_security_group" "masters_sg" {
     v4_cidr_blocks = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
   }
 
+  # Calico VXLAN
+  ingress {
+    protocol       = "UDP"
+    description    = "Calico VXLAN"
+    port           = 4789
+    v4_cidr_blocks = ["10.0.0.0/8"]
+  }
+
+  # Calico Typha
+  ingress {
+    protocol       = "TCP"
+    description    = "Calico Typha"
+    port           = 5473
+    v4_cidr_blocks = ["10.0.0.0/8"]
+  }
+
   # NodePort для доступа через SSH tunnel
   ingress {
     protocol       = "TCP"
@@ -125,6 +141,22 @@ resource "yandex_vpc_security_group" "workers_sg" {
     description    = "Calico BGP"
     port           = 179
     v4_cidr_blocks = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  }
+
+  # Calico VXLAN
+  ingress {
+    protocol       = "UDP"
+    description    = "Calico VXLAN"
+    port           = 4789
+    v4_cidr_blocks = ["10.0.0.0/8"]
+  }
+
+  # Calico Typha
+  ingress {
+    protocol       = "TCP"
+    description    = "Calico Typha"
+    port           = 5473
+    v4_cidr_blocks = ["10.0.0.0/8"]
   }
 
   # Весь исходящий трафик

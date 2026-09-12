@@ -1,33 +1,33 @@
 resource "yandex_compute_instance" "bastion" {
   name        = "bastion"
   hostname    = "bastion"
-  platform_id = "standard-v3"
+  platform_id = var.platform_id
   zone        = var.zone_a
-  allow_stopping_for_update  = true
+  allow_stopping_for_update = true
 
   resources {
-    cores         = 2
-    memory        = 2
-    core_fraction = 50
+    cores         = var.bastion_resources.cores
+    memory        = var.bastion_resources.memory
+    core_fraction = var.bastion_resources.core_fraction
   }
 
   boot_disk {
     initialize_params {
-      image_id = "fd83ica41cade1mj35sr" # Ubuntu 24.04 LTS
-      size     = 30
-      type     = "network-ssd"
+      image_id = var.image_id
+      size     = var.bastion_resources.disk_size
+      type     = var.bastion_resources.disk_type
     }
   }
 
   network_interface {
-  subnet_id  = yandex_vpc_subnet.public_subnet.id
-  nat        = true
-  ip_address = "10.0.10.10" 
-  security_group_ids = [yandex_vpc_security_group.bastion_sg.id]
+    subnet_id          = yandex_vpc_subnet.public_subnet.id
+    nat                = true
+    ip_address         = "10.0.10.10"
+    security_group_ids = [yandex_vpc_security_group.bastion_sg.id]
   }
 
   metadata = {
-    ssh-keys  = "ubuntu:${file(var.ssh_public_key_path)}"
+    ssh-keys  = "${var.vm_user}:${file(var.ssh_public_key_path)}"
     user-data = <<-EOF
       #cloud-config
       users:
